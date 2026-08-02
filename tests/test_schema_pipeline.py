@@ -444,6 +444,53 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
         )
         self.assertNotIn("EDM", [item["id"] for item in normalized["priority_plan"]["channels"]])
 
+    def test_missing_product_decisions_trigger_existing_semantic_repair(self):
+        tables, flags = self._tables_and_flags()
+        invalid = self._valid_structured_market(tables, "Australia")
+        invalid["priority_plan"]["products"] = []
+        valid = self._valid_structured_market(tables, "Australia")
+        responses = iter((json.dumps(invalid), json.dumps(valid)))
+        calls = []
+
+        raw = orchestrator.call_validated_json(
+            lambda prompt: calls.append(prompt) or next(responses),
+            "original market prompt",
+            lambda value: orchestrator.validate_market_json(value, tables, "Australia"),
+        )
+        recommendation, _ = orchestrator.normalize_market_recommendation(
+            raw, tables, "Australia", flags
+        )
+        pack = orchestrator.render_market_pack(tables, recommendation, flags)
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("priority_plan.products", calls[1])
+        self.assertNotIn("AI priority decision unavailable", pack)
+        self.assertTrue(all(
+            item["model_recommended"]
+            for item in recommendation["priority_plan"]["products"]
+        ))
+
+    def test_failed_product_repair_still_renders_without_false_model_rank(self):
+        tables, flags = self._tables_and_flags()
+        invalid = self._valid_structured_market(tables, "Australia")
+        invalid["priority_plan"]["products"] = []
+        responses = iter((json.dumps(invalid), json.dumps(invalid)))
+
+        raw = orchestrator.call_validated_json(
+            lambda _: next(responses), "prompt",
+            lambda value: orchestrator.validate_market_json(value, tables, "Australia"),
+        )
+        recommendation, warnings = orchestrator.normalize_market_recommendation(
+            raw, tables, "Australia", flags
+        )
+        pack = orchestrator.render_market_pack(tables, recommendation, flags)
+
+        self.assertTrue(raw.get("_validation_hints"))
+        self.assertTrue(warnings)
+        self.assertIn("AI priority decision unavailable", pack)
+        self.assertIn("| Product | — |", pack)
+        self.assertIn("is not an AI recommendation", pack)
+
     def test_failed_semantic_repair_becomes_hint_and_still_renders(self):
         tables, flags = self._tables_and_flags()
         invalid = self._valid_structured_market(tables, "Australia")

@@ -262,9 +262,41 @@ def validate_market_json(raw: dict, tables: dict, market: str,
             elif _clean(asset.get("Priority")) == "P2" and len(request["justification"].split()) < 5:
                 issues.append(f"cities[{city}] P2 asset '{request['id']}' needs a material justification.")
 
-    # Priority lists are advisory model output, not a generation gate. Normalization below
-    # intersects them with the code-locked selections, removes duplicates/unknown IDs and
-    # appends omitted legal items. A minor ranking mismatch must never discard the whole brief.
+    # Resource priority lists remain advisory: normalization intersects them with the locked
+    # selections and safely removes unknown IDs. Product priority is different because the
+    # execution table labels it as an AI recommendation. Require a complete decision for every
+    # table-C signal so a missing model array cannot be mistaken for a recommended ranking.
+    priority_plan = raw.get("priority_plan") if isinstance(raw.get("priority_plan"), dict) else {}
+    product_rows = [row for row in _items(priority_plan.get("products"))
+                    if isinstance(row, dict)]
+    expected_products = _product_ids(contract)
+    returned_products = [_clean(row.get("id")) for row in product_rows
+                         if _clean(row.get("id"))]
+    if len(returned_products) != len(set(returned_products)):
+        issues.append("priority_plan.products contains duplicate product IDs.")
+    if set(returned_products) != set(expected_products):
+        issues.append(
+            "priority_plan.products must contain every supplied table C product field exactly "
+            f"once: {expected_products}."
+        )
+    for row in product_rows:
+        product_id = _clean(row.get("id"))
+        if product_id not in expected_products:
+            continue
+        if len(_clean(row.get("decision")).split()) < 3:
+            issues.append(
+                f"priority_plan.products[{product_id}].decision must state lead, support or defer action."
+            )
+        if len(_clean(row.get("reason")).split()) < 3:
+            issues.append(
+                f"priority_plan.products[{product_id}].reason must explain the evidence-based trade-off."
+            )
+        refs = [_clean(ref) for ref in _items(row.get("evidence_refs")) if _clean(ref)]
+        expected_ref = f"C.{_slug(product_id)}"
+        if expected_ref not in refs:
+            issues.append(
+                f"priority_plan.products[{product_id}].evidence_refs must include {expected_ref}."
+            )
 
     crm = raw.get("crm") if isinstance(raw.get("crm"), dict) else {}
     for field in ("objective", "rationale"):
@@ -463,6 +495,9 @@ def _normalize_priority_dimension(value, expected_ids: list[str], evidence_catal
     out = []
     for item_id in ordered_ids:
         item = raw_rows.get(item_id, {})
+        decision = _clean(item.get("decision"))
+        reason = _clean(item.get("reason"))
+        model_recommended = bool(decision and reason)
         refs = [_clean(ref) for ref in _items(item.get("evidence_refs"))
                 if _clean(ref) in evidence_catalog]
         fallback_ref = evidence_id(item_id)
@@ -470,8 +505,9 @@ def _normalize_priority_dimension(value, expected_ids: list[str], evidence_catal
             refs = [fallback_ref]
         out.append({
             "id": item_id,
-            "decision": _clean(item.get("decision")) or "Priority decision requires PM completion",
-            "reason": _clean(item.get("reason")) or "Source evidence requires review before execution",
+            "decision": decision or "AI priority decision unavailable",
+            "reason": reason or "Source signal retained for review; no model ranking was accepted",
+            "model_recommended": model_recommended,
             "evidence_refs": refs,
             "evidence_basis": [evidence_catalog[ref] for ref in refs],
         })
@@ -896,16 +932,17 @@ def _execution_priority_lines(rec: dict) -> list[str]:
               "modules": "Page module", "assets": "Creative asset"}
     asset_meta = {item["id"]: item for city in rec["cities"] for item in city["assets"]}
     lines = ["### Execution priority [AI REC]", "",
-             "Array order is the model's recommendation; every item is constrained to the current market slice and source evidence.", "",
+             "Ranked rows reflect accepted model recommendations. A row with no rank was restored from source data after an incomplete model response and is not an AI recommendation.", "",
              "| Dimension | Rank | Item | Operational decision | Why | Decision basis |",
              "|---|---:|---|---|---|---|"]
     for dimension in ("cities", "products", "channels", "modules", "assets"):
         for rank, item in enumerate(rec.get("priority_plan", {}).get(dimension, []), 1):
             item_label = item["id"]
+            display_rank = rank if item.get("model_recommended", True) else "—"
             if dimension == "assets" and asset_meta.get(item["id"], {}).get("priority"):
                 item_label += f" [{asset_meta[item['id']]['priority']}]"
             lines.append("| " + " | ".join(_md(value) for value in (
-                labels[dimension], rank, item_label, item["decision"], item["reason"],
+                labels[dimension], display_rank, item_label, item["decision"], item["reason"],
                 _format_basis(item["evidence_basis"]),
             )) + " |")
     return lines
