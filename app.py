@@ -43,7 +43,7 @@ DEMO, DEMO_NOTE = demo_outputs.DEMO, demo_outputs.DEMO_NOTE
 
 APP_VERSION = "v2.5-streaming"
 
-st.set_page_config(page_title="Go Campaign Copilot", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="Go Campaign Copilot", page_icon="assets/trip-logo.svg", layout="wide")
 
 ss = st.session_state
 for k, v in [("tables", None), ("flags", []), ("source_name", ""), ("global_brief", ""),
