@@ -90,7 +90,7 @@ def market_scores(tables: dict) -> list[dict]:
     return rows
 
 
-def scores_md(rows: list[dict]) -> str:
+def scores_md(rows: list[dict], collapse_methodology: bool = False) -> str:
     dw, pw = SCORING["dim_weights"], SCORING["product_weights"]
     th = SCORING["tier_thresholds"]
     p0_count = sum(r.get("tier") == "P0" for r in rows)
@@ -116,6 +116,9 @@ def scores_md(rows: list[dict]) -> str:
             "historical calibration. All values are configurable defaults: before production use "
             "they should be calibrated against past campaign performance per market, or set by "
             "the Campaign Ops PM per objective.\n")
+    if collapse_methodology:
+        head = ("<details>\n<summary>Scoring methodology</summary>\n\n"
+                + head.strip() + "\n\n</details>\n")
     lines = ["| Market | UV_norm | Growth_norm | Product_norm (mix) | Score | Tier | Notes |",
              "|---|---|---|---|---|---|---|"]
     for r in sorted(rows, key=lambda x: (x["score"] is None, -(x["score"] or 0))):

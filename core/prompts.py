@@ -30,7 +30,9 @@ Required schema:
   "market_summary": "one concise recommended play",
   "immediate_next_action": "single highest-value next action",
   "product_focus": "product focus grounded in table C; do not invent price or inventory",
-  "stakeholder_constraint": {{"stakeholder": "exact Stakeholder name from table H", "impact": "how it constrains this market"}},
+  "stakeholder_constraints": [
+    {{"stakeholder": "exact Stakeholder name from table H", "impact": "how this source constraint changes the plan", "applies_to": ["crm", "localization"]}}
+  ],
   "priority_plan": {{
     "cities": [{{"id": "exact supplied interest city", "decision": "what to do at this rank", "reason": "evidence-based reason", "evidence_refs": ["all directly supporting exact catalog IDs"]}}],
     "products": [{{"id": "exact table C product field name", "decision": "lead/support/defer decision", "reason": "evidence-based reason", "evidence_refs": ["all directly supporting exact catalog IDs"]}}],
@@ -67,6 +69,12 @@ generic text such as "execute within the rules". Recommendation + rationale shou
 Evidence refs are internal grounding controls: select only exact IDs from the catalog below. Do not
 invent IDs. Include every directly supporting ID needed by the decision; there is no numeric upper
 limit, but do not add unrelated evidence.
+
+Return every table H constraint that materially affects this market; there is no fixed number. Use
+only exact Stakeholder names and source meanings from table H. `applies_to` may contain any relevant
+values from city_product, crm, assets, content, localization and campaign. Do not invent a numeric
+capacity or frequency limit when table H supplies only a qualitative constraint; explain the effect
+qualitatively and leave the precise limit for human confirmation.
 
 The order of every priority_plan array is the recommended execution order (first item = first
 priority). Rank every supplied interest city and every supplied table C product performance signal

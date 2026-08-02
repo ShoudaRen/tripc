@@ -289,8 +289,9 @@ def lint_required_ids(text: str, required_ids: list[str] | None) -> list[str]:
         if "|" not in line:
             continue
         cells = [c.strip().strip("*") for c in line.strip().strip("|").split("|")]
-        if cells and re.fullmatch(r"[A-Z]{1,4}-\d{1,3}", cells[0]):
-            defined.add(cells[0])
+        match = re.match(r"^([A-Z]{1,4}-\d{1,3})(?:\b|\s|$)", cells[0]) if cells else None
+        if match:
+            defined.add(match.group(1))
     return [f"Required confirmation ID missing from the confirmation table: {cid}."
             for cid in required_ids if cid not in defined]
 

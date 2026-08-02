@@ -66,10 +66,11 @@ class SchemaPipelineTests(unittest.TestCase):
             "market_summary": "Sequence the strongest cities before conditional opportunities",
             "immediate_next_action": "Approve the first-stage market activation plan",
             "product_focus": "Prioritize the strongest complete product signals available",
-            "stakeholder_constraint": {
+            "stakeholder_constraints": [{
                 "stakeholder": "Regional Teams",
                 "impact": "Regional review controls localization before activation",
-            },
+                "applies_to": ["localization"],
+            }],
             "priority_plan": {
                 "cities": [{**priority_item(
                     city["city"], f"DERIVED.CITY_ROLE.{orchestrator._slug(city['city'])}"
@@ -279,12 +280,16 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
                             for line in australia_rows))
         self.assertIn("Sapporo (readiness cluster: Hokkaido / Sapporo)", brief)
         self.assertIn("Okinwa | NEEDS DATA", brief)
-        self.assertIn("| Market | Product focus [AI REC] | Binding stakeholder constraint |", brief)
+        self.assertIn("<summary>Scoring methodology</summary>", brief)
+        self.assertIn("| Market | Product focus [AI REC] | Applicable stakeholder constraints |", brief)
         self.assertNotIn("Evidence status", brief)
         self.assertNotIn("Complete scoring inputs", brief)
         self.assertIn("| Checklist item | Owner | Why it needs confirmation | Blocking ID |", brief)
         self.assertNotIn("Brief drafted", brief)
         self.assertNotIn("Pending validation", brief)
+        self.assertEqual(
+            qa.lint_required_ids(brief, [flag["_id"] for flag in flags]), []
+        )
         warnings = qa.lint_all(brief, 5, tables)
         self.assertFalse(any("Matrix coverage missing" in warning for warning in warnings))
         self.assertFalse(any("City role mismatch" in warning for warning in warnings))
@@ -404,6 +409,11 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
         self.assertIn("| Checklist item | Owner | Why it needs confirmation | Blocking ID |", pack)
         self.assertNotIn("Brief drafted", pack)
         self.assertNotIn("Plan drafted", pack)
+        module_checklist = next(
+            line for line in pack.splitlines()
+            if line.startswith("| Implement selected page modules |")
+        )
+        self.assertEqual(module_checklist.count("Hero KV"), 1)
 
     def test_priority_plan_is_validated_and_model_order_is_preserved(self):
         tables, flags = self._tables_and_flags()
@@ -568,12 +578,29 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
         module = catalog["F.MODULE.HERO_KV"]["display"]
         asset = catalog["G.ASSET.HOMEPAGE_BANNER"]["display"]
         city = catalog["DERIVED.CITY_ROLE.GUANGZHOU"]["display"]
+        constraint = catalog["H.CONSTRAINT.CRM_TEAM"]["display"]
 
         self.assertIn("CTR Index", channel)
         self.assertIn("Notes", channel)
         self.assertIn("Design Complexity", module)
         self.assertIn("Localization Level", asset)
         self.assertIn("campaign risk", city)
+        self.assertIn("Impact on AI Workflow", constraint)
+
+    def test_multiple_stakeholder_constraints_are_preserved_and_routed(self):
+        tables, flags = self._tables_and_flags()
+        raw = self._valid_structured_market(tables, "Australia")
+        recommendation, _ = orchestrator.normalize_market_recommendation(
+            raw, tables, "Australia", flags
+        )
+
+        names = {item["stakeholder"] for item in recommendation["stakeholder_constraints"]}
+        self.assertIn("Regional Teams", names)
+        self.assertIn("Sourcing Team", names)
+        self.assertIn("CRM Team", names)
+        pack = orchestrator.render_market_pack(tables, recommendation, flags)
+        self.assertIn("Applicable stakeholder constraints", pack)
+        self.assertIn("Push frequency is limited", pack)
 
     def test_confirmation_ids_render_with_semantic_labels(self):
         tables, flags = self._tables_and_flags()

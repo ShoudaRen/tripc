@@ -122,7 +122,10 @@ def market_evidence_catalog(tables: dict, market: str) -> dict[str, dict]:
             ), "FACT - table F", "F")
     for row in (tables.get("H_Constraints") or []):
         add(f"H.CONSTRAINT.{_slug(row.get('Stakeholder'))}",
-            f"{_clean(row.get('Stakeholder'))}: {_clean(row.get('Input / Requirement'))}",
+            _row_evidence(
+                _clean(row.get("Stakeholder")), row,
+                ("Input / Requirement", "Impact on AI Workflow"),
+            ),
             "FACT - table H", "H")
     return catalog
 
@@ -155,7 +158,10 @@ def global_evidence_catalog(tables: dict, recommendations: dict[str, dict],
                 f"{flag['_id']}: {_clean(flag.get('detail'))}", "NEEDS CONFIRMATION", "FLAG")
     for row in (tables.get("H_Constraints") or []):
         catalog[f"H.CONSTRAINT.{_slug(row.get('Stakeholder'))}"] = _evidence_item(
-            f"{_clean(row.get('Stakeholder'))}: {_clean(row.get('Input / Requirement'))}",
+            _row_evidence(
+                _clean(row.get("Stakeholder")), row,
+                ("Input / Requirement", "Impact on AI Workflow"),
+            ),
             "FACT - table H", "H")
     return catalog
 
@@ -494,6 +500,91 @@ def _normalize_priority_plan(raw, contract: dict, cities: list[dict],
     ) for name in expected}
 
 
+_CONSTRAINT_SCOPES = {
+    "city_product", "crm", "assets", "content", "localization", "campaign",
+}
+
+
+def _source_constraint_scopes(row: dict) -> list[str]:
+    """Route a qualitative H-row to report dimensions without changing its meaning."""
+    text = " ".join(_clean(row.get(field)).lower() for field in (
+        "Stakeholder", "Input / Requirement", "Impact on AI Workflow",
+    ))
+    scopes = []
+    rules = (
+        ("city_product", ("supply", "inventory", "product depth", "over-promis")),
+        ("crm", ("crm", "push", "frequency", "audience", "segment", "suppression")),
+        ("assets", ("ued", "design", "creative", "asset", "p0", "p1")),
+        ("content", ("content center", "content resource", "content is truly needed")),
+        ("localization", ("regional", "localiz", "copy angle", "market-level override")),
+    )
+    for scope, markers in rules:
+        if any(marker in text for marker in markers):
+            scopes.append(scope)
+    return scopes or ["campaign"]
+
+
+def _market_uses_content(cities: list[dict]) -> bool:
+    markers = ("content", "editorial", "creator", "inspiration", "themed", "guide")
+    values = []
+    for city in cities:
+        values += [city.get("role"), city.get("product_angle"), city.get("play")]
+        for dimension in ("modules", "channels", "assets"):
+            values += [item.get("id") for item in city.get(dimension, [])]
+    text = " ".join(_clean(value).lower() for value in values)
+    return any(marker in text for marker in markers)
+
+
+def _normalize_stakeholder_constraints(raw: dict, tables: dict, cities: list[dict],
+                                       warnings: list[str], market: str) -> list[dict]:
+    """Keep every mechanically relevant H constraint; tolerate the legacy singular field."""
+    source_rows = [row for row in (tables.get("H_Constraints") or [])
+                   if _clean(row.get("Stakeholder"))]
+    by_name = {_clean(row.get("Stakeholder")): row for row in source_rows}
+    requested = [item for item in _items(raw.get("stakeholder_constraints"))
+                 if isinstance(item, dict)]
+    legacy = raw.get("stakeholder_constraint")
+    if not requested and isinstance(legacy, dict):
+        requested = [legacy]
+
+    requested_by_name = {}
+    for item in requested:
+        name = _clean(item.get("stakeholder"))
+        if name not in by_name:
+            if name:
+                warnings.append(f"{market}: unknown stakeholder constraint '{name}' removed.")
+            continue
+        requested_by_name[name] = item
+
+    has_assets = any(city.get("assets") for city in cities)
+    uses_content = _market_uses_content(cities)
+    out = []
+    for row in source_rows:
+        name = _clean(row.get("Stakeholder"))
+        inferred = _source_constraint_scopes(row)
+        model_item = requested_by_name.get(name, {})
+        model_scopes = [_clean(scope) for scope in _items(model_item.get("applies_to"))
+                        if _clean(scope) in _CONSTRAINT_SCOPES]
+        scopes = inferred if inferred != ["campaign"] else (model_scopes or inferred)
+        mechanically_relevant = bool(
+            set(scopes) & {"city_product", "crm", "localization", "campaign"}
+            or ("assets" in scopes and has_assets)
+            or ("content" in scopes and uses_content)
+        )
+        if not mechanically_relevant and not model_item:
+            continue
+        out.append({
+            "stakeholder": name,
+            "source_requirement": _clean(row.get("Input / Requirement")),
+            "source_impact": _clean(row.get("Impact on AI Workflow")),
+            "application": (_clean(model_item.get("impact"))
+                            or _clean(row.get("Impact on AI Workflow"))
+                            or "Apply this source constraint without inventing missing limits."),
+            "applies_to": scopes,
+        })
+    return out
+
+
 def normalize_market_recommendation(raw: dict, tables: dict, market: str,
                                     campaign_flags: list[dict]) -> tuple[dict, list[str]]:
     """Join AI-only fields onto locked facts; missing/illegal choices are repaired safely."""
@@ -562,19 +653,15 @@ def normalize_market_recommendation(raw: dict, tables: dict, market: str,
                                          "justification": request["justification"]})
         normalized_cities.append(normalized)
 
-    stakeholders = {_clean(r.get("Stakeholder")): r for r in (tables.get("H_Constraints") or [])}
-    stakeholder = raw.get("stakeholder_constraint") if isinstance(raw.get("stakeholder_constraint"), dict) else {}
-    stakeholder_name = _clean(stakeholder.get("stakeholder"))
-    if stakeholder_name not in stakeholders:
-        stakeholder_name = next(iter(stakeholders), "Campaign Ops Project Manager")
-        warnings.append(f"{market}: invalid stakeholder replaced with '{stakeholder_name}'.")
-
     evidence_catalog = market_evidence_catalog(tables, market)
     raw_readings = raw.get("readings") if isinstance(raw.get("readings"), dict) else {}
     readings = {name: _normalize_reading(raw_readings.get(name), evidence_catalog=evidence_catalog) for name in
                 ("positioning", "city_portfolio", "modules", "crm", "assets", "localization")}
     priority_plan = _normalize_priority_plan(
         raw.get("priority_plan"), contract, normalized_cities, evidence_catalog
+    )
+    stakeholder_constraints = _normalize_stakeholder_constraints(
+        raw, tables, normalized_cities, warnings, market
     )
     return {
         "market": market,
@@ -585,11 +672,7 @@ def normalize_market_recommendation(raw: dict, tables: dict, market: str,
         "market_summary": _clean(raw.get("market_summary")) or "Execute within the locked role and eligibility boundaries.",
         "immediate_next_action": _clean(raw.get("immediate_next_action")) or "PM to review the validated market recommendation.",
         "product_focus": _clean(raw.get("product_focus")) or "Use the strongest complete product signals in table C.",
-        "stakeholder_constraint": {
-            "stakeholder": stakeholder_name,
-            "source_requirement": _clean(stakeholders.get(stakeholder_name, {}).get("Input / Requirement")),
-            "impact": _clean(stakeholder.get("impact")) or "Owner review required before activation.",
-        },
+        "stakeholder_constraints": stakeholder_constraints,
         "crm": _normalize_crm(raw.get("crm"), tables, market, contract, normalized_cities,
                               evidence_catalog),
         "priority_plan": priority_plan,
@@ -769,6 +852,36 @@ def _ranked_summary(rec: dict, dimension: str, asset: bool = False) -> str:
     return "; ".join(rendered)
 
 
+def _constraints_for(rec: dict, scopes: set[str] | None = None) -> list[dict]:
+    constraints = rec.get("stakeholder_constraints", [])
+    if scopes is None:
+        return constraints
+    return [item for item in constraints if set(item.get("applies_to", [])) & scopes]
+
+
+def _constraint_summary(rec: dict, scopes: set[str] | None = None,
+                        names_only: bool = False) -> str:
+    constraints = _constraints_for(rec, scopes)
+    if names_only:
+        return ", ".join(item["stakeholder"] for item in constraints) or "—"
+    return "; ".join(
+        f"{item['stakeholder']}: {item['source_requirement']}"
+        for item in constraints
+    ) or "—"
+
+
+def _constraint_note(rec: dict, scopes: set[str]) -> str | None:
+    constraints = _constraints_for(rec, scopes)
+    if not constraints:
+        return None
+    details = "; ".join(
+        f"{item['stakeholder']}: {item['source_requirement']} [FACT - table H]; "
+        f"market application: {item['application']} [AI REC]"
+        for item in constraints
+    )
+    return f"**Applicable stakeholder constraints:** {details}"
+
+
 def _unique_resources_in_priority(rec: dict, dimension: str) -> list[dict]:
     first = {}
     for city in rec["cities"]:
@@ -883,7 +996,7 @@ def render_global_brief(tables: dict, recommendations: dict[str, dict],
             lines.append(f"- **{key}**: {_md(campaign[key])} [FACT - table A]")
     lines += [f"- **Core tension**: {_md(synthesis['core_tension'])} [AI REC]", "",
               "## 2. Decision logic & market tiering", _reading(synthesis["tiering_reading"]), "",
-              scoring.scores_md(scoring.market_scores(tables)), ""]
+              scoring.scores_md(scoring.market_scores(tables), collapse_methodology=True), ""]
     for row in scoring.market_scores(tables):
         lines.append(f"- **{row['market']} — {row['tier']} [DERIVED]**: "
                      f"{_md(synthesis['market_rationales'][row['market']])} [AI REC]")
@@ -904,13 +1017,12 @@ def render_global_brief(tables: dict, recommendations: dict[str, dict],
                      ", ".join(groups["NEEDS DATA"]), rec["immediate_next_action"]]) + " |")
 
     lines += ["", "## 4. Product focus by market", _reading(synthesis["product_reading"]), "",
-              "| Market | Product focus [AI REC] | Binding stakeholder constraint |",
+              "| Market | Product focus [AI REC] | Applicable stakeholder constraints |",
               "|---|---|---|"]
     for market in markets:
         rec = recommendations[market]
-        constraint = rec["stakeholder_constraint"]
         lines.append(f"| {_md(market)} | {_md(rec['product_focus'])} | "
-                     f"{_md(constraint['stakeholder'])}: {_md(constraint['source_requirement'])} [FACT - table H] |")
+                     f"{_md(_constraint_summary(rec, {'city_product'}))} [FACT - table H] |")
 
     lines += ["", "## 5. Channel and CRM strategy", _reading(synthesis["channel_reading"]), ""]
     for market in markets:
@@ -935,7 +1047,7 @@ def render_global_brief(tables: dict, recommendations: dict[str, dict],
               "The following IDs are assigned by code and remain open until a human owner resolves them.", "",
               "| ID | Issue | Source | Owner |", "|---|---|---|---|"]
     for flag in flags:
-        lines.append(f"| {_md(_flag_ref(flag))} | {_md(flag.get('detail'))} | {_md(flag.get('table'))} | {_owner(flag)} |")
+        lines.append(f"| {_md(flag.get('_id'))} | {_md(flag.get('detail'))} | {_md(flag.get('table'))} | {_owner(flag)} |")
 
     lines += ["", "## 9. Campaign recommendation matrix",
               "[AI REC] Each row combines model judgment with code-locked market, city, role, cluster, eligibility and priority fields.", "",
@@ -945,12 +1057,22 @@ def render_global_brief(tables: dict, recommendations: dict[str, dict],
         rec = recommendations[market]
         for rank, city in enumerate(_ordered_cities(rec), 1):
             city_label = city["city"] + (f" (readiness cluster: {city['cluster']})" if city.get("cluster") else "")
-            blockers = _flag_refs(city["blocker_ids"], flags) or "—"
+            blockers = _flag_refs(city["blocker_ids"], flags)
+            scopes = {"city_product"}
+            if city.get("channels"):
+                scopes.add("crm")
+            if city.get("assets"):
+                scopes.add("assets")
+            if _market_uses_content([city]):
+                scopes.add("content")
+            constraint_names = _constraint_summary(rec, scopes, names_only=True)
+            dependencies = "; ".join(value for value in (blockers, constraint_names)
+                                     if value and value != "—") or "—"
             lines.append("| " + " | ".join(_md(x) for x in [market, rank, city_label, city["role"],
                          city["product_angle"], _list_resources(_ordered_resources(city["modules"], rec, "modules")),
                          _list_resources(_ordered_resources(city["channels"], rec, "channels")),
                          _list_resources(_ordered_resources(city["assets"], rec, "assets"), asset=True),
-                         blockers, city["play"]]) + " |")
+                         dependencies, city["play"]]) + " |")
 
     lines += ["", "## 10. Launch checklist (campaign level)", _reading(synthesis["launch_reading"]), "",
                "| Checklist item | Owner | Why it needs confirmation | Blocking ID |",
@@ -978,7 +1100,6 @@ def render_market_pack(tables: dict, rec: dict, flags: list[dict], upstream: str
         f" — {c['role']}"
         for rank, c in enumerate(_ordered_cities(rec), 1)
     )
-    stakeholder = rec["stakeholder_constraint"]
     lines = [f"# MARKET EXECUTION PACK: {market} ({code})", "",
              "## 1. Market positioning & decision-chain summary", _reading(rec["readings"]["positioning"]), "",
              "| Market | City / readiness cluster [CODE-LOCKED] | Product focus [AI REC] | Channel choice [AI REC] | Asset choice [AI REC] | Stakeholder constraint | Recommended play [AI REC] |",
@@ -986,10 +1107,13 @@ def render_market_pack(tables: dict, rec: dict, flags: list[dict], upstream: str
              "| " + " | ".join(_md(x) for x in [market, city_summary, rec["product_focus"],
                     _ranked_summary(rec, "channels"),
                     _ranked_summary(rec, "assets", asset=True),
-                    f"{stakeholder['stakeholder']}: {stakeholder['source_requirement']} [FACT - table H]",
+                    f"{_constraint_summary(rec)} [FACT - table H]",
                     rec["market_summary"]]) + " |", ""]
     lines += _execution_priority_lines(rec)
     lines += ["", "## 2. City push plan", _reading(rec["readings"]["city_portfolio"]), ""]
+    city_constraint_note = _constraint_note(rec, {"city_product"})
+    if city_constraint_note:
+        lines += [city_constraint_note, ""]
     for rank, city in enumerate(_ordered_cities(rec), 1):
         cluster = f" (readiness cluster: {city['cluster']})" if city.get("cluster") else ""
         lines.append(f"{rank}. **{city['city']}**{cluster} — **{city['role']} [DERIVED]**: "
@@ -997,6 +1121,9 @@ def render_market_pack(tables: dict, rec: dict, flags: list[dict], upstream: str
 
     lines += ["", "## 3. Page module configuration",
               _reading(rec["readings"]["modules"]), ""]
+    content_constraint_note = _constraint_note(rec, {"content"})
+    if content_constraint_note:
+        lines += [content_constraint_note, ""]
     modules = _unique_resources_in_priority(rec, "modules")
     module_priorities = {item["id"]: item for item in rec["priority_plan"]["modules"]}
     for i, item in enumerate(modules, 1):
@@ -1011,6 +1138,9 @@ def render_market_pack(tables: dict, rec: dict, flags: list[dict], upstream: str
               f"- **Rationale:** {_md(rec['crm']['rationale'])} [AI REC]",
               f"- **Decision basis:** {_format_basis(rec['crm']['evidence_basis'])}", "",
               "**Audience segments [ASSUMPTION]**"]
+    crm_constraint_note = _constraint_note(rec, {"crm"})
+    if crm_constraint_note:
+        lines += [crm_constraint_note, ""]
     lines += [f"- **{_md(segment['name'])}**"
               + (f" ({_md(segment['window'])})" if segment.get("window") else "")
               + f": {_md(segment['reason'])} [ASSUMPTION]"
@@ -1032,6 +1162,9 @@ def render_market_pack(tables: dict, rec: dict, flags: list[dict], upstream: str
 
     lines += ["", "## 5. Asset requests", _reading(rec["readings"]["assets"]), "",
                "| Asset | Priority | Selection rationale |", "|---|---|---|"]
+    asset_constraint_note = _constraint_note(rec, {"assets"})
+    if asset_constraint_note:
+        lines += [asset_constraint_note, ""]
     asset_priorities = {item["id"]: item for item in rec["priority_plan"]["assets"]}
     for item in selected_assets:
         priority_rec = asset_priorities.get(item["id"], {})
@@ -1042,8 +1175,11 @@ def render_market_pack(tables: dict, rec: dict, flags: list[dict], upstream: str
         lines.append(f"| {_md(item['id'])} | {_md(item.get('priority'))} | "
                      f"{_md(rationale)} |")
 
-    lines += ["", "## 6. Localization checklist", _reading(rec["readings"]["localization"]), "",
-              f"- [ ] {_md(market_row.get('Localization Need'))} [FACT - table B]",
+    lines += ["", "## 6. Localization checklist", _reading(rec["readings"]["localization"]), ""]
+    localization_constraint_note = _constraint_note(rec, {"localization"})
+    if localization_constraint_note:
+        lines += [localization_constraint_note, ""]
+    lines += [f"- [ ] {_md(market_row.get('Localization Need'))} [FACT - table B]",
               "- [ ] Regional team reviews language, imagery and CTA before launch [NEEDS CONFIRMATION]", "",
               "## 7. Market-level NEEDS CONFIRMATION list",
               "Market IDs below are local execution tasks; campaign IDs are referenced as blockers and are not duplicated.", "",
@@ -1073,9 +1209,9 @@ def render_market_pack(tables: dict, rec: dict, flags: list[dict], upstream: str
         "Confirm CRM audience definitions and windows", "CRM Team", segment_reason, "—",
     ]) + " |")
 
-    selected_modules = ", ".join(item["id"] for item in _ordered_resources(
-        [item for city in rec["cities"] for item in city["modules"]], rec, "modules"
-    ))
+    selected_modules = ", ".join(
+        item["id"] for item in _unique_resources_in_priority(rec, "modules")
+    )
     if selected_modules:
         lines.append("| " + " | ".join(_md(x) for x in [
             "Implement selected page modules", "UED / Design",

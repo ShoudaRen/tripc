@@ -104,7 +104,9 @@ with st.sidebar:
                "3️⃣ Validate + global synthesis  \n4️⃣ Assemble fixed tables (code)  \n"
                "5️⃣ Human review gate  \n\nThe same prompt and schema run for every market and destination.")
 
-st.title("🧭 Go Campaign Copilot")
+with st.container(horizontal=True, vertical_alignment="center", gap="xsmall"):
+    st.image("assets/trip-logo.svg", width=64)
+    st.title("Go Campaign Copilot")
 st.caption("Turns fragmented destination-campaign inputs into reviewed, actionable ops documents. "
            "Humans stay the decision makers.")
 
@@ -510,13 +512,29 @@ with colB:
         st.json(inspected_trace)
         st.code(inspected_context, language="markdown")
 
-def _show_lint(doc: str, market: str | None = None):
-    for w in _lint_doc(doc, market):
-        st.warning(f"Output lint: {w}")
+def _show_diagnostics(doc: str, market: str | None = None,
+                      model_hints: list[str] | None = None):
+    """Keep non-blocking technical checks available without dominating the report."""
+    lint_warnings = _lint_doc(doc, market)
+    model_hints = model_hints or []
+    total = len(lint_warnings) + len(model_hints)
+    if not total:
+        return
+    with st.expander(f"Technical diagnostics ({total})", expanded=False):
+        st.caption("Non-blocking checks for debugging and reviewer audit; the report was generated.")
+        if lint_warnings:
+            st.markdown("**Output checks**")
+            for warning in lint_warnings:
+                st.markdown(f"- {warning}")
+        if model_hints:
+            st.markdown("**Model-output normalization**")
+            for hint in model_hints:
+                st.markdown(f"- {hint}")
 
 
-_DECISION_BASIS = re.compile(
-    r"<details>\s*<summary>Decision basis</summary>\s*(.*?)\s*</details>",
+_COLLAPSIBLE_DETAIL = re.compile(
+    r"<details>\s*<summary>(?P<title>Decision basis|Scoring methodology)</summary>\s*"
+    r"(?P<body>.*?)\s*</details>",
     re.DOTALL,
 )
 _APPENDIX_SECTION = re.compile(
@@ -526,14 +544,14 @@ _APPENDIX_SECTION = re.compile(
 
 
 def _render_with_decision_basis(doc: str):
-    """Render prose normally and decision evidence in collapsed native expanders."""
+    """Render prose normally and optional audit detail in collapsed native expanders."""
     cursor = 0
-    for match in _DECISION_BASIS.finditer(doc):
+    for match in _COLLAPSIBLE_DETAIL.finditer(doc):
         prose = doc[cursor:match.start()].strip()
         if prose:
             st.markdown(prose)
-        with st.expander("Decision basis", expanded=False):
-            st.markdown(match.group(1).strip())
+        with st.expander(match.group("title"), expanded=False):
+            st.markdown(match.group("body").strip())
         cursor = match.end()
     remainder = doc[cursor:].strip()
     if remainder:
@@ -552,18 +570,7 @@ def _render_report(doc: str):
 
 
 if ss.global_brief:
-    _show_lint(ss.global_brief)
-    if ss.normalization_warnings:
-        st.warning(
-            f"Report generated with {len(ss.normalization_warnings)} model-output issue(s) "
-            "safely normalized by code. Review the hints below; generation was not blocked."
-        )
-        with st.expander(
-            f"Generation hints · code normalized {len(ss.normalization_warnings)} issue(s)",
-            expanded=False,
-        ):
-            for warning in ss.normalization_warnings:
-                st.markdown(f"- {warning}")
+    _show_diagnostics(ss.global_brief, model_hints=ss.normalization_warnings)
     with st.expander("📖 How to read this document (tags, IDs, roles, tiers)"):
         st.markdown(prompts.DOC_LEGEND)
     _render_report(ss.global_brief)
@@ -666,7 +673,7 @@ else:
                         )
                 ss.traces[mkt] = trace
             if mkt in ss.packs:
-                _show_lint(ss.packs[mkt], mkt)
+                _show_diagnostics(ss.packs[mkt], mkt)
                 with st.expander("📖 How to read this document (tags, IDs, roles, tiers)"):
                     st.markdown(prompts.DOC_LEGEND)
                 _render_report(ss.packs[mkt])
