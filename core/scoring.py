@@ -119,15 +119,15 @@ def scores_md(rows: list[dict], collapse_methodology: bool = False) -> str:
     if collapse_methodology:
         head = ("<details>\n<summary>Scoring methodology</summary>\n\n"
                 + head.strip() + "\n\n</details>\n")
-    lines = ["| Market | UV_norm | Growth_norm | Product_norm (mix) | Score | Tier | Notes |",
-             "|---|---|---|---|---|---|---|"]
+    lines = ["| Market | UV_norm | Growth_norm | Product_norm (mix) | Score | Tier |",
+             "|---|---|---|---|---|---|"]
     for r in sorted(rows, key=lambda x: (x["score"] is None, -(x["score"] or 0))):
         uv = "—" if r["uv_norm"] is None else r["uv_norm"]
         growth = "—" if r["growth_norm"] is None else r["growth_norm"]
         product = "—" if r["product_norm"] is None else r["product_norm"]
         score = "—" if r["score"] is None else r["score"]
         lines.append(f"| {r['market']} | {uv} | {growth} | "
-                     f"{product} ({r['breakdown']}) | {score} | {r['tier']} | {r['notes']} |")
+                     f"{product} ({r['breakdown']}) | {score} | {r['tier']} |")
     return head + "\n".join(lines)
 
 

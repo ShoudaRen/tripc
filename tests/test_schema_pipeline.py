@@ -144,6 +144,13 @@ class SchemaPipelineTests(unittest.TestCase):
         self.assertIsNone(scores["India"]["score"])
         self.assertEqual(scores["India"]["tier"], "NEEDS DATA")
 
+    def test_scoring_table_hides_internal_notes_column(self):
+        tables, _ = parser.load_workbook_with_report(ROOT / "data" / "go_china.xlsx")
+        rendered = scoring.scores_md(scoring.market_scores(tables), collapse_methodology=True)
+
+        self.assertNotIn("| Notes |", rendered)
+        self.assertIn("| Market | UV_norm | Growth_norm | Product_norm (mix) | Score | Tier |", rendered)
+
     def test_market_codes_and_readiness_gaps_are_detected(self):
         tables, _ = parser.load_workbook_with_report(STRESS_FILE)
         flags = parser.validate(tables) + scoring.detect_conflicts(tables)
