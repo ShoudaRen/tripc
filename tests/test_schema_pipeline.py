@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from core import context, llm, orchestrator, parser, plan, prompts, qa, schema, scoring
+from core import context, demo_outputs, llm, orchestrator, parser, plan, prompts, qa, schema, scoring
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +150,17 @@ class SchemaPipelineTests(unittest.TestCase):
 
         self.assertNotIn("| Notes |", rendered)
         self.assertIn("| Market | UV_norm | Growth_norm | Product_norm (mix) | Score | Tier |", rendered)
+
+    def test_demo_contains_current_global_brief_and_all_market_packs(self):
+        expected = {"__global__", "Hong Kong", "Korea", "Singapore", "Malaysia", "Thailand"}
+
+        self.assertEqual(set(demo_outputs.DEMO), expected)
+        self.assertTrue(demo_outputs.DEMO["__global__"].startswith("# Go China Round 7"))
+        for market in expected - {"__global__"}:
+            pack = demo_outputs.DEMO[market]
+            self.assertTrue(pack.startswith(f"# MARKET EXECUTION PACK: {market}"))
+            self.assertNotIn("| Notes |", pack)
+            self.assertNotIn("| Product | — |", pack)
 
     def test_market_codes_and_readiness_gaps_are_detected(self):
         tables, _ = parser.load_workbook_with_report(STRESS_FILE)

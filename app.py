@@ -344,8 +344,8 @@ def _generate(user_prompt: str, demo_key: str) -> str:
     if provider.startswith("Demo"):
         if ss.source_name == "go_china.xlsx" and demo_key in DEMO:
             return DEMO[demo_key]
-        return ("*(Demo mode covers the Go China sample: global brief + Hong Kong + Korea. "
-                "Connect an API key in the sidebar to generate this output live.)*")
+        return ("*(Demo mode covers the Go China sample: global brief and all five market "
+                "execution packs. Load the Go China sample to use these pre-generated outputs.)*")
     try:
         doc = llm.generate(provider, base_url, api_key, model, prompts.SYSTEM, user_prompt,
                            thinking=thinking)
