@@ -120,10 +120,10 @@ Main KV: Priority = P0; Usage = Campaign page hero section; Localization Level =
 
 </details>
 
-| Asset | Priority | Selection rationale |
-|---|---|---|
 **Applicable stakeholder constraints:** UED / Design: Creative resources are limited [FACT - table H]; market application: Restricts creative resources, necessitating strict prioritization of P0 and P1 assets and avoidance of P2 requests. [AI REC]
 
+| Asset | Priority | Why selected [AI REC] |
+|---|---|---|
 | Main KV | P0 | Produce as P0 hero visual with localized value messaging. High localization level and P0 priority are required to establish the campaign's deal-focused positioning immediately. |
 | Homepage Banner | P0 | Produce as P0 entry asset for app and H5. P0 priority and medium localization level ensure the campaign is clearly communicated in limited space across all entry points. |
 | CRM Header | P1 | Produce as P1 visual for EDM landing pages. High localization level and P1 priority are necessary to deliver market-specific message angles for explanation-heavy CRM channels. |

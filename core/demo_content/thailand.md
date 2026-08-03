@@ -116,10 +116,10 @@ Main KV: Priority = P0; Usage = Campaign page hero section; Localization Level =
 
 </details>
 
-| Asset | Priority | Selection rationale |
-|---|---|---|
 **Applicable stakeholder constraints:** UED / Design: Creative resources are limited [FACT - table H]; market application: Creative resources are limited, restricting asset production strictly to P0 and P1 items and conditionally justified P2 items, avoiding unnecessary requests. [AI REC]
 
+| Asset | Priority | Why selected [AI REC] |
+|---|---|---|
 | Main KV | P0 | P0 hero asset required for visual inspiration and Thai localization. High localization level and P0 priority make it essential for the campaign page hero section. |
 | Homepage Banner | P0 | P0 entry asset for app and H5 traffic capture. Required for all markets to communicate the campaign clearly in limited entry spaces. |
 | City Module Image | P1 | P1 asset for themed city sections. Medium localization level allows reuse of base images with localized text, saving design capacity. |

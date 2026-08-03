@@ -161,6 +161,11 @@ class SchemaPipelineTests(unittest.TestCase):
             self.assertTrue(pack.startswith(f"# MARKET EXECUTION PACK: {market}"))
             self.assertNotIn("| Notes |", pack)
             self.assertNotIn("| Product | — |", pack)
+            asset_section = pack.split("## 5. Asset requests", 1)[1].split(
+                "## 6. Localization checklist", 1
+            )[0]
+            self.assertLess(asset_section.index("Applicable stakeholder constraints"),
+                            asset_section.index("| Asset | Priority | Why selected [AI REC] |"))
 
     def test_market_codes_and_readiness_gaps_are_detected(self):
         tables, _ = parser.load_workbook_with_report(STRESS_FILE)
@@ -655,6 +660,19 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
     def test_multiple_stakeholder_constraints_are_preserved_and_routed(self):
         tables, flags = self._tables_and_flags()
         raw = self._valid_structured_market(tables, "Australia")
+        contract = next(item for item in plan.recommendation_contract(tables)["markets"]
+                        if item["market"] == "Australia")
+        asset = contract["assets"]["eligible"][0]["_name"]
+        raw["cities"][0]["assets"] = [{
+            "id": asset,
+            "justification": "Supports the selected market page and localization job",
+        }]
+        raw["priority_plan"]["assets"] = [{
+            "id": asset,
+            "decision": "Produce this asset for the selected market experience",
+            "reason": "Its source usage matches the selected page and localization job",
+            "evidence_refs": [f"G.ASSET.{orchestrator._slug(asset)}"],
+        }]
         recommendation, _ = orchestrator.normalize_market_recommendation(
             raw, tables, "Australia", flags
         )
@@ -666,6 +684,15 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
         pack = orchestrator.render_market_pack(tables, recommendation, flags)
         self.assertIn("Applicable stakeholder constraints", pack)
         self.assertIn("Push frequency is limited", pack)
+        asset_section = pack.split("## 5. Asset requests", 1)[1].split(
+            "## 6. Localization checklist", 1
+        )[0]
+        self.assertLess(asset_section.index("Applicable stakeholder constraints"),
+                        asset_section.index("| Asset | Priority | Why selected [AI REC] |"))
+        self.assertIn(
+            "| Asset | Priority | Why selected [AI REC] |\n|---|---|---|\n| " + asset + " |",
+            asset_section,
+        )
 
     def test_confirmation_ids_render_with_semantic_labels(self):
         tables, flags = self._tables_and_flags()

@@ -119,10 +119,10 @@ Main KV: Priority = P0; Usage = Campaign page hero section; Localization Level =
 
 </details>
 
-| Asset | Priority | Selection rationale |
-|---|---|---|
 **Applicable stakeholder constraints:** UED / Design: Creative resources are limited [FACT - table H]; market application: Restrict production to P0 and P1 assets only, explicitly dropping the P2 Inline Promo Banner to conserve limited creative resources. [AI REC]
 
+| Asset | Priority | Why selected [AI REC] |
+|---|---|---|
 | Main KV | P0 | Mandatory P0 asset for the campaign page hero, requiring high localization to deliver the fresh weekend angle. P0 priority and high localization need make it essential for the hero section to set the correct tone. |
 | Homepage Banner | P0 | Mandatory P0 asset for app entry, needing clear communication of the short-trip campaign in limited space. P0 priority ensures the short-trip message is clearly communicated at the primary app entry points. |
 | City Module Image | P1 | P1 asset to visually support the Themed Cities module, reusing base images with localized text to save design effort. P1 priority and ability to reuse base images align perfectly with UED design constraints. |

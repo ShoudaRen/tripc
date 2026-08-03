@@ -116,10 +116,10 @@ Main KV: Priority = P0; Usage = Campaign page hero section; Localization Level =
 
 </details>
 
-| Asset | Priority | Selection rationale |
-|---|---|---|
 **Applicable stakeholder constraints:** UED / Design: Creative resources are limited [FACT - table H]; market application: Prioritize P0 and P1 assets and avoid unnecessary P2 requests due to limited creative resources. [AI REC]
 
+| Asset | Priority | Why selected [AI REC] |
+|---|---|---|
 | Main KV | P0 | P0; required for campaign page hero with high localization need. Mandatory entry point for the campaign, requiring high localization to deliver the Korean itinerary guidance angle. |
 | Homepage Banner | P0 | P0; required for app and H5 entry points. Mandatory for driving traffic from the app homepage and external H5 entries to the campaign page. |
 | City Module Image | P1 | P1; needed for themed city sections to support the portfolio sequence. Required to visually differentiate the city portfolio sequence on the landing page without overextending design resources. |

@@ -1197,11 +1197,11 @@ def render_market_pack(tables: dict, rec: dict, flags: list[dict], upstream: str
     if rec["crm"]["edm_copy"]:
         lines += ["", "**EDM copy [AI REC]**"] + [f"- {_md(x)}" for x in rec["crm"]["edm_copy"]]
 
-    lines += ["", "## 5. Asset requests", _reading(rec["readings"]["assets"]), "",
-               "| Asset | Priority | Selection rationale |", "|---|---|---|"]
+    lines += ["", "## 5. Asset requests", _reading(rec["readings"]["assets"]), ""]
     asset_constraint_note = _constraint_note(rec, {"assets"})
     if asset_constraint_note:
         lines += [asset_constraint_note, ""]
+    lines += ["| Asset | Priority | Why selected [AI REC] |", "|---|---|---|"]
     asset_priorities = {item["id"]: item for item in rec["priority_plan"]["assets"]}
     for item in selected_assets:
         priority_rec = asset_priorities.get(item["id"], {})

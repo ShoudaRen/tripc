@@ -123,10 +123,10 @@ UED / Design: Input / Requirement = Creative resources are limited; Impact on AI
 
 </details>
 
-| Asset | Priority | Selection rationale |
-|---|---|---|
 **Applicable stakeholder constraints:** UED / Design: Creative resources are limited [FACT - table H]; market application: Limits creative resources, enforcing strict prioritization of P0/P1 assets and deferring P2 requests. [AI REC]
 
+| Asset | Priority | Why selected [AI REC] |
+|---|---|---|
 | Main KV | P0 | Produce for campaign page hero. P0 priority required for main visual and localized headline. |
 | Homepage Banner | P0 | Produce for app and online entry. P0 priority needed to communicate the campaign clearly in limited space. |
 | City Module Image | P1 | Produce for themed city sections. P1 priority supports the city portfolio storytelling with localized text. |
