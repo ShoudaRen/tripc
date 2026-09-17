@@ -1,6 +1,6 @@
-# Go Campaign Copilot
+# Campaign Copilot
 
-AI workflow prototype for destination campaign operations (Trip.com AI Marketing Engineer take-home case, Option D: end-to-end campaign ops workflow).
+AI workflow prototype for end-to-end destination campaign operations.
 
 Turns fragmented campaign inputs (markets, cities, products, channels, assets, constraints) into reviewed, actionable ops documents — with humans as the final decision makers.
 

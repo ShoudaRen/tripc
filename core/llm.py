@@ -81,10 +81,57 @@ def explain_error(error: Exception) -> str:
     return message
 
 
+def _as_dict(value) -> dict:
+    """Best-effort conversion for OpenAI/Anthropic usage objects."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(exclude_none=True)
+        except TypeError:
+            return dump()
+    return {
+        key: getattr(value, key)
+        for key in dir(value)
+        if not key.startswith("_") and not callable(getattr(value, key, None))
+    }
+
+
+def _usage_summary(usage, *, input_chars: int, output_chars: int,
+                   reasoning_chars: int, duration_seconds: float) -> dict:
+    """Normalize provider usage while retaining useful local measurements."""
+    raw = _as_dict(usage)
+    details = _as_dict(
+        raw.get("completion_tokens_details")
+        or raw.get("output_tokens_details")
+        or raw.get("output_token_details")
+    )
+    prompt_tokens = raw.get("prompt_tokens", raw.get("input_tokens"))
+    completion_tokens = raw.get("completion_tokens", raw.get("output_tokens"))
+    total_tokens = raw.get("total_tokens")
+    if total_tokens is None and isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
+        total_tokens = prompt_tokens + completion_tokens
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "reasoning_tokens": details.get("reasoning_tokens"),
+        "total_tokens": total_tokens,
+        "input_chars": input_chars,
+        "output_chars": output_chars,
+        "reasoning_chars": reasoning_chars,
+        "duration_seconds": round(duration_seconds, 2),
+    }
+
+
 def generate(provider: str, base_url: str, api_key: str, model: str,
              system: str, user: str, temperature: float = 0.3,
              thinking: bool = False,
-             status_callback: Callable[[str], None] | None = None) -> str:
+             status_callback: Callable[[str], None] | None = None,
+             usage_callback: Callable[[dict], None] | None = None) -> str:
+    started = time.monotonic()
     if provider.startswith("Demo"):
         raise RuntimeError("Demo mode is handled by the app, not the LLM client.")
     base_url = (base_url or DEFAULTS.get(provider, {}).get("base_url", "")).rstrip("/")
@@ -98,12 +145,20 @@ def generate(provider: str, base_url: str, api_key: str, model: str,
                     {"model": model, "max_tokens": 4096, "system": system,
                      "temperature": temperature,
                      "messages": [{"role": "user", "content": user}]})
-        return "".join(b.get("text", "") for b in out.get("content", []))
+        content = "".join(b.get("text", "") for b in out.get("content", []))
+        if usage_callback:
+            usage_callback(_usage_summary(
+                out.get("usage"), input_chars=len(system) + len(user),
+                output_chars=len(content), reasoning_chars=0,
+                duration_seconds=time.monotonic() - started,
+            ))
+        return content
     # OpenAI-compatible (including Qwen/DashScope compatible mode).
     request = {
         "model": model,
         "temperature": temperature,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
     }
@@ -129,8 +184,11 @@ def generate(provider: str, base_url: str, api_key: str, model: str,
         parts = []
         reasoning_chars = 0
         content_chars = 0
+        final_usage = None
         last_status = 0.0
         for chunk in stream:
+            if getattr(chunk, "usage", None) is not None:
+                final_usage = chunk.usage
             if not getattr(chunk, "choices", None):
                 continue
             delta = chunk.choices[0].delta
@@ -159,6 +217,15 @@ def generate(provider: str, base_url: str, api_key: str, model: str,
     if status_callback:
         try:
             status_callback(f"response received · {content_chars} final chars")
+        except Exception:
+            pass
+    if usage_callback:
+        try:
+            usage_callback(_usage_summary(
+                final_usage, input_chars=len(system) + len(user),
+                output_chars=content_chars, reasoning_chars=reasoning_chars,
+                duration_seconds=time.monotonic() - started,
+            ))
         except Exception:
             pass
     return content

@@ -99,6 +99,20 @@ def market_evidence_catalog(tables: dict, market: str) -> dict[str, dict]:
         cluster = f"; readiness cluster = {_clean(city.get('cluster'))}" if _clean(city.get("cluster")) else ""
         display = f"{city['city']} role = {city['role']}; {city['why']}{cluster}{risk}"
         add(f"DERIVED.CITY_ROLE.{_slug(city['city'])}", display, "DERIVED", "DERIVED")
+        city_name = city["city"].lower()
+        readiness_row = next((row for row in (tables.get("D_Cities") or [])
+                              if city_name in _clean(row.get("City / Cluster")).lower()), {})
+        if readiness_row:
+            add(
+                f"D.CITY_READINESS.{_slug(city['city'])}",
+                _row_evidence(
+                    city["city"], readiness_row,
+                    ("City / Cluster", "Destination Role", "Hotel Supply Readiness",
+                     "Flight Route Readiness", "Attractions / Tours Readiness",
+                     "Train / Transfer Readiness", "Campaign Risk"),
+                ),
+                "FACT - table D", "D",
+            )
     for status in ("eligible", "ambiguous"):
         for row in contract["channels"][status]:
             add(f"E.CHANNEL.{_slug(row['_name'])}",
@@ -372,8 +386,60 @@ def validate_global_json(raw: dict, markets: list[str],
     return issues
 
 
+def _repair_units(issues: list[str]) -> list[str]:
+    """Map verbose validation paths to independently replaceable JSON units."""
+    units = []
+    for issue in issues:
+        match = re.match(r"([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?", issue)
+        if not match:
+            continue
+        root, child = match.groups()
+        if root == "readings" and child:
+            unit = f"readings.{child}"
+        elif root == "priority_plan" and child:
+            unit = f"priority_plan.{child}"
+        elif root == "crm":
+            # CRM fields are interdependent (objective, evidence, segments and cadence).
+            unit = "crm"
+        elif root == "cities":
+            unit = "cities"
+        else:
+            unit = root
+        if unit not in units:
+            units.append(unit)
+    return units
+
+
+def _path_value(value: dict, path: str):
+    current = value
+    for key in path.split("."):
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def _set_path(target: dict, path: str, value) -> None:
+    current = target
+    keys = path.split(".")
+    for key in keys[:-1]:
+        current = current.setdefault(key, {})
+    current[keys[-1]] = value
+
+
+def _merge_patch(target: dict, patch: dict) -> dict:
+    out = dict(target)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge_patch(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
 def call_validated_json(call_model: Callable[[str], str], prompt: str,
-                        validator: Callable[[dict], list[str]]) -> dict:
+                        validator: Callable[[dict], list[str]],
+                        repair_context: str = "") -> dict:
     """Normalize semantic drift, but never invent a report when model JSON is unavailable."""
     first = call_model(prompt)
     try:
@@ -398,11 +464,30 @@ def call_validated_json(call_model: Callable[[str], str], prompt: str,
     issues = validator(value)
     if not issues:
         return value
-    repair = (f"{prompt}\n\nYour previous response failed validation. Return the FULL corrected JSON "
-              "object only. Preserve valid strategy choices and fix every issue below. Do not "
-              "change locked facts.\n- " + "\n- ".join(issues) + "\n\nPrevious response:\n" + first)
+    units = _repair_units(issues)
+    current = {}
+    for unit in units:
+        _set_path(current, unit, _path_value(value, unit))
+    repair = (
+        "Your previous response failed validation. Return ONLY a JSON merge patch containing "
+        f"these repair units: {units}. Do not return or change any other field. Preserve the "
+        "existing shape inside each unit and fix every listed issue. Use only legal IDs and "
+        "immutable evidence supplied below.\n\nValidation issues:\n- "
+        + "\n- ".join(issues)
+        + "\n\nCurrent values to repair:\n"
+        + json.dumps(current, ensure_ascii=False, separators=(",", ":"))
+        + ("\n\nLegal choices and evidence:\n" + repair_context if repair_context else "")
+    )
     try:
-        repaired = extract_json(call_model(repair))
+        response_patch = extract_json(call_model(repair))
+        selected_patch = {}
+        for unit in units:
+            patched_value = _path_value(response_patch, unit)
+            if patched_value is not None:
+                _set_path(selected_patch, unit, patched_value)
+        if not selected_patch:
+            raise StructuredOutputError("Repair response did not contain any requested field.")
+        repaired = _merge_patch(value, selected_patch)
         remaining = validator(repaired)
     except Exception as exc:
         value["_validation_hints"] = issues + [
@@ -804,23 +889,43 @@ def normalize_global_synthesis(raw: dict, markets: list[str],
 
 def compact_global_context(tables: dict, recommendations: dict[str, dict],
                            flags: list[dict]) -> str:
-    def compact(value):
-        if isinstance(value, dict):
-            return {key: compact(item) for key, item in value.items()
-                    if key not in ("evidence_basis", "normalization_warnings")}
-        if isinstance(value, list):
-            return [compact(item) for item in value]
-        return value
-
-    payload = {
-        "campaign": tables.get("A_Campaign"),
-        "market_scores": scoring.market_scores(tables),
-        "market_recommendations": compact(recommendations),
-        "stakeholder_constraints": tables.get("H_Constraints"),
-        "confirmation_items": [{"id": f.get("_id"), "type": f.get("type"),
-                                "detail": f.get("detail")} for f in flags],
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    """Validated judgment summaries only; immutable facts live in the global catalog."""
+    payload = {}
+    for market, rec in recommendations.items():
+        readings = {
+            name: {"recommendation": value.get("recommendation"),
+                   "rationale": value.get("rationale")}
+            for name, value in rec.get("readings", {}).items()
+            if isinstance(value, dict)
+        }
+        priorities = {
+            name: [{key: item.get(key) for key in ("id", "decision", "reason")}
+                   for item in items]
+            for name, items in rec.get("priority_plan", {}).items()
+        }
+        cities = [{
+            "city": city.get("city"), "role": city.get("role"),
+            "product_angle": city.get("product_angle"), "play": city.get("play"),
+            "modules": [item.get("id") for item in city.get("modules", [])],
+            "channels": [item.get("id") for item in city.get("channels", [])],
+            "assets": [item.get("id") for item in city.get("assets", [])],
+        } for city in rec.get("cities", [])]
+        payload[market] = {
+            "market_summary": rec.get("market_summary"),
+            "immediate_next_action": rec.get("immediate_next_action"),
+            "product_focus": rec.get("product_focus"),
+            "readings": readings,
+            "priority_plan": priorities,
+            "cities": cities,
+            "crm": {key: rec.get("crm", {}).get(key)
+                    for key in ("objective", "rationale")},
+            "stakeholder_constraints": [
+                {key: item.get(key) for key in ("stakeholder", "impact", "applies_to")}
+                for item in rec.get("stakeholder_constraints", [])
+            ],
+        }
+    return json.dumps({"validated_market_summaries": payload}, ensure_ascii=False,
+                      separators=(",", ":"))
 
 
 def _md(value) -> str:

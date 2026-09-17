@@ -167,6 +167,15 @@ class SchemaPipelineTests(unittest.TestCase):
             self.assertLess(asset_section.index("Applicable stakeholder constraints"),
                             asset_section.index("| Asset | Priority | Why selected [AI REC] |"))
 
+    def test_demo_outputs_are_brand_neutral_and_free_of_corrupted_separators(self):
+        forbidden = ("trip" + ".com", "c" + "trip", "\u643a\u7a0b", "trip-" + "logo")
+
+        for name, document in demo_outputs.DEMO.items():
+            normalized = document.lower()
+            self.assertNotIn("\u0431\u043a", document, name)
+            for marker in forbidden:
+                self.assertNotIn(marker, normalized, name)
+
     def test_market_codes_and_readiness_gaps_are_detected(self):
         tables, _ = parser.load_workbook_with_report(STRESS_FILE)
         flags = parser.validate(tables) + scoring.detect_conflicts(tables)
@@ -226,17 +235,42 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
         )
 
     def test_section_three_is_a_market_level_summary(self):
-        self.assertIn("EXACTLY ONE row per market", prompts.GLOBAL_BRIEF)
-        self.assertIn("Immediate next action [AI REC]", prompts.GLOBAL_BRIEF)
-        self.assertIn("Never output one row per city here", prompts.GLOBAL_BRIEF)
+        tables, flags = self._tables_and_flags()
+        markets = parser.parse_markets(tables)
+        recommendations = {
+            market: orchestrator.normalize_market_recommendation(
+                {"cities": []}, tables, market, flags
+            )[0]
+            for market in markets
+        }
+        synthesis = orchestrator.normalize_global_synthesis({}, markets)
+        brief = orchestrator.render_global_brief(tables, recommendations, synthesis, flags)
+        section = brief.split("## 3. Executive market x city summary", 1)[1].split(
+            "## 4. Product focus by market", 1
+        )[0]
+
+        self.assertIn("Immediate next action [AI REC]", section)
+        for market in markets:
+            self.assertEqual(section.count(f"| {market} |"), 1)
 
     def test_market_pack_exposes_the_required_abstraction(self):
-        self.assertIn("Decision chain summary", prompts.MARKET_PACK)
-        self.assertIn(
-            "Market x City / City Cluster x Product x Channel x Asset x Stakeholder Constraint",
-            prompts.MARKET_PACK,
+        tables, flags = self._tables_and_flags()
+        raw = self._valid_structured_market(tables, "Australia")
+        recommendation, _ = orchestrator.normalize_market_recommendation(
+            raw, tables, "Australia", flags
         )
-        self.assertIn("EXACTLY ONE data row", prompts.MARKET_PACK)
+        pack = orchestrator.render_market_pack(tables, recommendation, flags)
+        summary = pack.split("## 1. Market positioning & decision-chain summary", 1)[1].split(
+            "### Execution priority", 1
+        )[0]
+
+        self.assertIn("City / readiness cluster [CODE-LOCKED]", summary)
+        self.assertIn("Product focus [AI REC]", summary)
+        self.assertIn("Channel choice [AI REC]", summary)
+        self.assertIn("Asset choice [AI REC]", summary)
+        self.assertIn("Stakeholder constraint", summary)
+        self.assertEqual(sum(line.startswith("| Australia |")
+                             for line in summary.splitlines()), 1)
 
     def test_structured_normalization_restores_locked_rows_and_filters_resources(self):
         tables, flags = self._tables_and_flags()
@@ -395,7 +429,7 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
     def test_lint_does_not_confuse_clusters_or_channel_names_with_assets(self):
         tables, _ = parser.load_workbook_with_report(ROOT / "data" / "go_china.xlsx")
         text = """| Korea | Confirm Chengdu / Chongqing product depth |\n
-| Korea | Shanghai | Conversion | Trip.com App Homepage Banner | City Module Image [P1] |"""
+| Korea | Shanghai | Conversion | App Homepage Banner | City Module Image [P1] |"""
 
         warnings = qa.lint_market_city(text, tables) + qa.lint_asset_priorities(text, tables)
 
@@ -595,6 +629,82 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
         self.assertTrue(any("thinking stream active" in status for status in statuses))
         self.assertTrue(any("response received" in status for status in statuses))
 
+    def test_stream_usage_is_captured_from_final_empty_choices_chunk(self):
+        captured = {}
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                self.http_client = kwargs["http_client"]
+
+            def __enter__(self): return self
+
+            def __exit__(self, *_): self.http_client.close()
+
+            @property
+            def chat(self):
+                def create(**kwargs):
+                    captured["request"] = kwargs
+                    return iter([
+                        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+                            reasoning_content="hidden", content=None))], usage=None),
+                        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+                            reasoning_content=None, content='{"ok":true}'))], usage=None),
+                        SimpleNamespace(choices=[], usage=SimpleNamespace(
+                            prompt_tokens=120, completion_tokens=30, total_tokens=150,
+                            completion_tokens_details=SimpleNamespace(reasoning_tokens=18),
+                        )),
+                    ])
+                return SimpleNamespace(completions=SimpleNamespace(create=create))
+
+        usage_rows = []
+        with patch("core.llm.OpenAI", FakeOpenAI):
+            result = llm.generate(
+                "Qwen (DashScope)", "https://example.test", "key", "model",
+                "system", "user", thinking=True, usage_callback=usage_rows.append,
+            )
+
+        self.assertEqual(result, '{"ok":true}')
+        self.assertEqual(captured["request"]["stream_options"], {"include_usage": True})
+        self.assertEqual(usage_rows[0]["total_tokens"], 150)
+        self.assertEqual(usage_rows[0]["reasoning_tokens"], 18)
+        self.assertGreater(usage_rows[0]["reasoning_chars"], 0)
+
+    def test_semantic_repair_accepts_partial_patch_and_preserves_valid_fields(self):
+        tables, _ = self._tables_and_flags()
+        invalid = self._valid_structured_market(tables, "Australia")
+        invalid["market_summary"] = "Keep this distinctive valid market summary unchanged"
+        invalid["crm"]["weekly_plan"] = invalid["crm"]["weekly_plan"][:1]
+        valid = self._valid_structured_market(tables, "Australia")
+        responses = iter((json.dumps(invalid), json.dumps({"crm": valid["crm"]})))
+        calls = []
+
+        repaired = orchestrator.call_validated_json(
+            lambda prompt: calls.append(prompt) or next(responses),
+            "large original prompt that must not be repeated",
+            lambda value: orchestrator.validate_market_json(value, tables, "Australia"),
+            repair_context="compact legal choices",
+        )
+
+        self.assertEqual(repaired["market_summary"], invalid["market_summary"])
+        self.assertEqual(repaired["crm"], valid["crm"])
+        self.assertNotIn("large original prompt", calls[1])
+        self.assertIn("compact legal choices", calls[1])
+        self.assertIn("these repair units: ['crm']", calls[1])
+
+    def test_market_prompt_uses_catalog_once_instead_of_repeating_source_tables(self):
+        tables, flags = self._tables_and_flags()
+        package, _ = context.assemble_market_prompt(tables, "Australia", flags)
+        catalog = orchestrator.market_evidence_catalog(tables, "Australia")
+        prompt = prompts.MARKET_RECOMMENDATION_JSON.format(
+            market="Australia", weeks=orchestrator.campaign_weeks(tables),
+            evidence_catalog=json.dumps(catalog, ensure_ascii=False, separators=(",", ":")),
+            context=package,
+        )
+
+        self.assertEqual(prompt.count("Booking Lead Time ="), 1)
+        self.assertNotIn("Market demand (table B", prompt)
+        self.assertIn('"legal_choices"', prompt)
+
     def test_non_thinking_path_also_uses_streaming(self):
         captured = {}
 
@@ -648,6 +758,7 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
         module = catalog["F.MODULE.HERO_KV"]["display"]
         asset = catalog["G.ASSET.HOMEPAGE_BANNER"]["display"]
         city = catalog["DERIVED.CITY_ROLE.GUANGZHOU"]["display"]
+        city_readiness = catalog["D.CITY_READINESS.GUANGZHOU"]["display"]
         constraint = catalog["H.CONSTRAINT.CRM_TEAM"]["display"]
 
         self.assertIn("CTR Index", channel)
@@ -655,6 +766,8 @@ Campaign Week 1 and Campaign Week 2. Push copy example 1: Limited seats.
         self.assertIn("Design Complexity", module)
         self.assertIn("Localization Level", asset)
         self.assertIn("campaign risk", city)
+        self.assertIn("Destination Role", city_readiness)
+        self.assertIn("Attractions / Tours Readiness", city_readiness)
         self.assertIn("Impact on AI Workflow", constraint)
 
     def test_multiple_stakeholder_constraints_are_preserved_and_routed(self):

@@ -1,5 +1,5 @@
 """
-Go Campaign Copilot — destination campaign AI workflow prototype.
+Campaign Copilot — destination campaign AI workflow prototype.
 Streamlit app. Run: streamlit run app.py
 """
 import hashlib
@@ -41,9 +41,9 @@ qa = importlib.reload(qa)
 demo_outputs = importlib.reload(demo_outputs)
 DEMO, DEMO_NOTE = demo_outputs.DEMO, demo_outputs.DEMO_NOTE
 
-APP_VERSION = "v2.5-streaming"
+APP_VERSION = "v2.6-token-efficient"
 
-st.set_page_config(page_title="Go Campaign Copilot", page_icon="assets/trip-logo.svg", layout="wide")
+st.set_page_config(page_title="Campaign Copilot", page_icon="✦", layout="wide")
 
 ss = st.session_state
 for k, v in [("tables", None), ("flags", []), ("source_name", ""), ("global_brief", ""),
@@ -51,7 +51,7 @@ for k, v in [("tables", None), ("flags", []), ("source_name", ""), ("global_brie
              ("launch_checks", {}), ("source_id", ""), ("schema_report", None),
              ("schema_engine_version", ""), ("market_recommendations", {}),
              ("global_synthesis", {}), ("normalization_warnings", []),
-             ("market_aliases", {})]:
+             ("market_aliases", {}), ("token_usage", [])]:
     ss.setdefault(k, v)
 
 # Do not reuse state created by an older workflow/schema contract.
@@ -60,7 +60,8 @@ if ss.schema_engine_version != APP_VERSION:
                        ("source_id", ""), ("schema_report", None), ("global_brief", ""),
                        ("decisions", {}), ("unlocked", False), ("packs", {}), ("traces", {}),
                        ("market_recommendations", {}), ("global_synthesis", {}),
-                       ("normalization_warnings", []), ("market_aliases", {})):
+                       ("normalization_warnings", []), ("market_aliases", {}),
+                       ("token_usage", [])):
         ss[key] = value
     ss.schema_engine_version = APP_VERSION
 
@@ -78,7 +79,6 @@ with st.sidebar:
     provider = st.selectbox("Provider", llm.PROVIDERS, index=0)
     base_url, api_key, model = "", "", ""
     thinking = False
-    autofix = False
     if not provider.startswith("Demo"):
         d = llm.DEFAULTS.get(provider, {})
         base_url = st.text_input("Base URL", value=d.get("base_url", ""))
@@ -104,9 +104,7 @@ with st.sidebar:
                "3️⃣ Validate + global synthesis  \n4️⃣ Assemble fixed tables (code)  \n"
                "5️⃣ Human review gate  \n\nThe same prompt and schema run for every market and destination.")
 
-with st.container(horizontal=True, vertical_alignment="center", gap="xsmall"):
-    st.image("assets/trip-logo.svg", width=64)
-    st.title("Go Campaign Copilot")
+st.title("Campaign Copilot")
 st.caption("Turns fragmented destination-campaign inputs into reviewed, actionable ops documents. "
            "Humans stay the decision makers.")
 
@@ -323,16 +321,6 @@ if ss.flags:
 st.divider()
 st.subheader("Step 3 · Campaign strategy brief + human review gate")
 
-FIX_PROMPT = """You produced the document below. A deterministic validator found these violations:
-
-{warnings}
-
-Return the FULL corrected document. Change ONLY what is necessary to resolve each violation; keep everything else verbatim, including all tags and tables.
-
----
-{doc}"""
-
-
 def _lint_doc(doc: str, market: str | None = None) -> list[str]:
     weeks = qa.parse_duration_weeks(ss.tables.get("A_Campaign"))
     required_ids = ([item["_id"] for item in _campaign_review_items()]
@@ -340,28 +328,11 @@ def _lint_doc(doc: str, market: str | None = None) -> list[str]:
     return qa.lint_all(doc, weeks, ss.tables, market=market, required_ids=required_ids)
 
 
-def _generate(user_prompt: str, demo_key: str) -> str:
-    if provider.startswith("Demo"):
-        if ss.source_name == "go_china.xlsx" and demo_key in DEMO:
-            return DEMO[demo_key]
-        return ("*(Demo mode covers the Go China sample: global brief and all five market "
-                "execution packs. Load the Go China sample to use these pre-generated outputs.)*")
-    try:
-        doc = llm.generate(provider, base_url, api_key, model, prompts.SYSTEM, user_prompt,
-                           thinking=thinking)
-        lint_market = None if demo_key == "__global__" else demo_key
-        warns = _lint_doc(doc, lint_market)
-        if warns and autofix:
-            with st.spinner(f"Validator found {len(warns)} issue(s) - running corrective pass..."):
-                doc = llm.generate(provider, base_url, api_key, model, prompts.SYSTEM,
-                                   FIX_PROMPT.format(warnings="\n".join(f"- {w}" for w in warns),
-                                                     doc=doc),
-                                   thinking=thinking)
-        return doc
-    except Exception as e:
-        st.error(f"Model call failed: {llm.explain_error(e)}")
-        st.caption("You can switch to Demo mode to verify the rest of the workflow without an API call.")
-        return ""
+def _demo_output(demo_key: str) -> str:
+    if ss.source_name == "go_china.xlsx" and demo_key in DEMO:
+        return DEMO[demo_key]
+    return ("*(Demo mode covers the Go China sample: global brief and all five market "
+            "execution packs. Load the Go China sample to use these pre-generated outputs.)*")
 
 def _campaign_review_items() -> list[dict]:
     """Stable campaign IDs shared by prompt, UI review and downstream packs."""
@@ -381,10 +352,11 @@ def _campaign_review_items() -> list[dict]:
     return items
 
 
-def _call_live_model(user_prompt: str, status_callback=None) -> str:
+def _call_live_model(user_prompt: str, status_callback=None, usage_callback=None) -> str:
     return llm.generate(
         provider, base_url, api_key, model, prompts.SYSTEM, user_prompt,
         temperature=0.2, thinking=thinking, status_callback=status_callback,
+        usage_callback=usage_callback,
     )
 
 
@@ -397,11 +369,19 @@ def _generate_structured_brief() -> str:
     for index, market in enumerate(markets, 1):
         progress.progress((index - 1) / total,
                           text=f"Analyzing {market} ({index}/{len(markets)})...")
-        market_context, trace = context.assemble_market(
+        market_context, trace = context.assemble_market_prompt(
             ss.tables, market, campaign_flags, upstream=""
         )
         evidence_catalog = orchestrator.market_evidence_catalog(ss.tables, market)
+        repair_context = json.dumps(
+            {"evidence_catalog": evidence_catalog,
+             "decision_package": json.loads(market_context)},
+            ensure_ascii=False, separators=(",", ":"),
+        )
+        attempt = {"count": 0}
         def market_call(prompt, current_market=market, current_index=index):
+            attempt["count"] += 1
+            stage = "initial" if attempt["count"] == 1 else "repair"
             return _call_live_model(
                 prompt,
                 lambda status: progress.progress(
@@ -409,6 +389,10 @@ def _generate_structured_brief() -> str:
                     text=(f"Analyzing {current_market} ({current_index}/{len(markets)}) · "
                           f"{status}"),
                 ),
+                lambda usage: ss.token_usage.append({
+                    "scope": current_market, "stage": stage,
+                    "attempt": attempt["count"], **usage,
+                }),
             )
 
         raw = orchestrator.call_validated_json(
@@ -425,6 +409,7 @@ def _generate_structured_brief() -> str:
                 value, ss.tables, current_market,
                 orchestrator.market_evidence_catalog(ss.tables, current_market),
             ),
+            repair_context=repair_context,
         )
         recommendation, warnings = orchestrator.normalize_market_recommendation(
             raw, ss.tables, market, campaign_flags
@@ -440,13 +425,20 @@ def _generate_structured_brief() -> str:
     global_evidence = orchestrator.global_evidence_catalog(
         ss.tables, recommendations, campaign_flags
     )
+    synthesis_attempt = {"count": 0}
     def synthesis_call(prompt):
+        synthesis_attempt["count"] += 1
+        stage = "initial" if synthesis_attempt["count"] == 1 else "repair"
         return _call_live_model(
             prompt,
             lambda status: progress.progress(
                 len(markets) / total,
                 text=f"Synthesizing cross-market trade-offs · {status}",
             ),
+            lambda usage: ss.token_usage.append({
+                "scope": "Global synthesis", "stage": stage,
+                "attempt": synthesis_attempt["count"], **usage,
+            }),
         )
 
     raw_synthesis = orchestrator.call_validated_json(
@@ -458,6 +450,8 @@ def _generate_structured_brief() -> str:
             context=compact,
         ),
         lambda value: orchestrator.validate_global_json(value, markets, global_evidence),
+        repair_context=json.dumps(global_evidence, ensure_ascii=False,
+                                  separators=(",", ":")),
     )
     synthesis = orchestrator.normalize_global_synthesis(
         raw_synthesis, markets, global_evidence
@@ -483,14 +477,10 @@ with colA:
         ss.market_recommendations = {}
         ss.global_synthesis = {}
         ss.normalization_warnings = []
+        ss.token_usage = []
         try:
             if provider.startswith("Demo"):
-                ss.global_brief = _generate(
-                    prompts.GLOBAL_BRIEF.format(
-                        context=context.assemble_global(ss.tables, _campaign_review_items())
-                    ),
-                    "__global__",
-                )
+                ss.global_brief = _demo_output("__global__")
             else:
                 ss.global_brief = _generate_structured_brief()
         except Exception as exc:
@@ -503,14 +493,27 @@ with colA:
                            file_name="campaign_strategy_brief.md")
 with colB:
     with st.expander("🔍 Multi-call context inspector"):
-        st.caption("Each market call sees only its filtered B/C/D/E/G slice plus global A/F/H. "
-                   "The final synthesis sees only validated compact recommendations.")
+        st.caption("Each market call sees one compact evidence catalog plus legal choices for that "
+                   "market. Source rows remain traceable below but are not duplicated in the prompt.")
         inspect_market = st.selectbox("Inspect market slice", markets, key="inspect_market_slice")
-        inspected_context, inspected_trace = context.assemble_market(
+        inspected_context, inspected_trace = context.assemble_market_prompt(
             ss.tables, inspect_market, _campaign_review_items(), upstream=""
         )
         st.json(inspected_trace)
-        st.code(inspected_context, language="markdown")
+        st.code(inspected_context, language="json")
+
+if ss.token_usage:
+    with st.expander("Token diagnostics", expanded=False):
+        exact_total = sum(row.get("total_tokens") or 0 for row in ss.token_usage)
+        if exact_total:
+            st.caption(
+                f"Provider-reported total: {exact_total:,} tokens. Repair calls are shown separately."
+            )
+        else:
+            st.caption(
+                "This provider did not return exact usage; character counts and duration are still shown."
+            )
+        st.dataframe(ss.token_usage, hide_index=True)
 
 def _show_diagnostics(doc: str, market: str | None = None,
                       model_hints: list[str] | None = None):
@@ -659,7 +662,9 @@ else:
                 st.json(trace)
                 st.code(ctx, language="markdown")
             if st.button(f"Generate {mkt} execution pack", key=f"gen_{mkt}"):
-                if mkt in ss.market_recommendations:
+                if provider.startswith("Demo"):
+                    ss.packs[mkt] = _demo_output(mkt)
+                elif mkt in ss.market_recommendations:
                     ss.packs[mkt] = orchestrator.render_market_pack(
                         ss.tables,
                         ss.market_recommendations[mkt],
@@ -667,10 +672,8 @@ else:
                         upstream,
                     )
                 else:
-                    with st.spinner(f"Generating {mkt} pack..."):
-                        ss.packs[mkt] = _generate(
-                            prompts.MARKET_PACK.format(context=ctx), mkt
-                        )
+                    st.error("Structured market recommendation is unavailable. Regenerate the "
+                             "strategy brief in Step 3; free-form fallback generation is disabled.")
                 ss.traces[mkt] = trace
             if mkt in ss.packs:
                 _show_diagnostics(ss.packs[mkt], mkt)

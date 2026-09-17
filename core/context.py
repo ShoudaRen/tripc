@@ -9,7 +9,9 @@ dimension) and are loaded in full.
 In production these filters become SQL WHERE clauses; the logic is identical.
 """
 from __future__ import annotations
-from .parser import split_list, _clean
+import json
+
+from .parser import split_list, _clean, _is_missing
 from .schema import TABLE_SPECS
 
 
@@ -177,3 +179,65 @@ def assemble_market(tables: dict, market: str, flags: list[dict],
         "F/H": "full (global config tables, no market dimension)",
     }
     return "\n".join(parts), trace
+
+
+def assemble_market_prompt(tables: dict, market: str, flags: list[dict],
+                           upstream: str = "") -> tuple[str, dict]:
+    """Compact legal-choice package for the model.
+
+    Source values are intentionally omitted here because the evidence catalog already
+    carries their immutable values. This package only declares what the model may choose.
+    """
+    from . import orchestrator
+    from .plan import recommendation_contract
+
+    # Keep the existing trace/query path as the auditable record of row selection.
+    _, trace = assemble_market(tables, market, flags, upstream)
+    contract = next(
+        item for item in recommendation_contract(tables)["markets"]
+        if item["market"].lower() == market.lower()
+    )
+    modules = []
+    for row in recommendation_contract(tables)["modules"]:
+        modules.append({
+            "id": row["_name"],
+            "status": ("conditional" if _is_missing(row.get("Conversion Contribution"))
+                       else "eligible"),
+        })
+
+    interest_names = {city["city"].lower() for city in contract["cities"]}
+    relevant_flags = []
+    for flag in flags:
+        haystack = " ".join(str(flag.get(key, "")) for key in
+                            ("market", "city", "row", "detail")).lower()
+        if (market.lower() in haystack
+                or any(city in haystack for city in interest_names)
+                or flag.get("table") == "A_Campaign"):
+            relevant_flags.append({
+                "id": flag.get("_id"), "type": flag.get("type"),
+                "detail": flag.get("detail"),
+            })
+
+    package = {
+        "market": market,
+        "campaign_weeks": orchestrator.campaign_weeks(tables),
+        "legal_choices": {
+            "cities": [{"id": row["city"], "locked_role": row["role"]}
+                       for row in contract["cities"]],
+            "products": orchestrator._product_ids(contract),
+            "channels": {
+                "eligible": [row["_name"] for row in contract["channels"]["eligible"]],
+                "conditional": [row["_name"] for row in contract["channels"]["ambiguous"]],
+            },
+            "modules": modules,
+            "assets": {
+                "eligible": [{"id": row["_name"], "priority": _clean(row.get("Priority"))}
+                             for row in contract["assets"]["eligible"]],
+                "conditional": [{"id": row["_name"], "priority": _clean(row.get("Priority"))}
+                                for row in contract["assets"]["ambiguous"]],
+            },
+        },
+        "confirmation_items": relevant_flags,
+        "upstream_decisions": upstream or "none",
+    }
+    return json.dumps(package, ensure_ascii=False, separators=(",", ":")), trace
